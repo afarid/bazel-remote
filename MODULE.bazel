@@ -107,6 +107,7 @@ use_repo(
     "com_github_azure_azure_sdk_for_go_sdk_azidentity",
     "com_github_azure_azure_sdk_for_go_sdk_storage_azblob",
     "com_github_djherbis_atime",
+    "com_github_fsnotify_fsnotify",
     "com_github_go_ldap_ldap_v3",
     "com_github_google_go_cmp",
     "com_github_google_uuid",

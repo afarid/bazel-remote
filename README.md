@@ -740,11 +740,17 @@ $ bazel build :bazel-remote
 
 ### TLS certificate rotation
 
-The server automatically reloads `tls_cert_file` and `tls_key_file` on new full
-HTTP and gRPC TLS handshakes when their contents change. No restart or signal
-is required. Established connections and resumed TLS sessions are unaffected.
-File replacement and symlink rotation are supported; update both files together
-where possible to avoid temporarily exposing a mismatched pair.
+The server watches `tls_cert_file` and `tls_key_file` using filesystem
+notifications (inotify on Linux) and automatically reloads them when they change,
+even when no clients are connected. A background watcher coalesces changes for
+100 ms, validates the pair, and atomically updates the certificate shared by
+HTTPS and gRPC. TLS handshakes read this in-memory certificate without accessing
+the files. No restart or signal is required.
+
+In-place writes, atomic file replacement, and symlink rotation are supported.
+Update both files together where possible to avoid temporarily exposing a
+mismatched pair. New full TLS handshakes use the latest accepted certificate;
+established connections and resumed TLS sessions are unaffected.
 
 Before accepting a replacement, bazel-remote checks that the certificate and
 private key match, that every certificate in the supplied chain parses and is
@@ -755,8 +761,8 @@ for verifying the server's hostname and trust chain.
 
 Invalid initial certificates prevent startup. If a later update is invalid or
 unreadable, the server logs the error and continues using the last accepted
-certificate, retrying on subsequent TLS handshakes. This fallback does not extend
-the previous certificate's expiration date. Client CA trust (`tls_ca_file`) and
+certificate, retrying on subsequent filesystem changes. This fallback does not
+extend the previous certificate's expiration date. Client CA trust (`tls_ca_file`) and
 upstream proxy TLS configuration are loaded at startup and require a restart
 when changed.
 

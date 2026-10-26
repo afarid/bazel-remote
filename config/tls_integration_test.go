@@ -77,6 +77,31 @@ func integrationTLSWrite(t *testing.T, path string, data []byte) {
 	}
 }
 
+func integrationTLSAwaitSerial(t *testing.T, reloader *tlsCertificateReloader, serial int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		cert := reloader.certificate.Load()
+		if cert != nil && cert.Leaf.SerialNumber.Int64() == serial {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("watcher did not publish certificate serial %d before a new handshake", serial)
+}
+
+func integrationTLSAwaitProcessed(t *testing.T, reloader *tlsCertificateReloader, previous uint64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if reloader.processed.Load() > previous {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("watcher did not process certificate update")
+}
+
 func TestTLSCertificateReloadListeners(t *testing.T) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -129,6 +154,15 @@ func TestTLSCertificateReloadListeners(t *testing.T) {
 			}
 			if err := cfg.setTLSConfig(); err != nil {
 				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := cfg.TLSCertificateWatcher.Close(); err != nil {
+					t.Errorf("closing TLS certificate watcher: %v", err)
+				}
+			})
+			reloader, ok := cfg.TLSCertificateWatcher.(*tlsCertificateReloader)
+			if !ok {
+				t.Fatal("missing TLS certificate watcher")
 			}
 			if cfg.TLSConfig.GetCertificate == nil || len(cfg.TLSConfig.Certificates) != 0 {
 				t.Fatal("listeners must use GetCertificate, including connections without SNI")
@@ -217,17 +251,27 @@ func TestTLSCertificateReloadListeners(t *testing.T) {
 			}
 
 			check(1)
+			processed := reloader.processed.Load()
 			integrationTLSWrite(t, cfg.TLSCertFile, second.certPEM)
+			integrationTLSAwaitProcessed(t, reloader, processed)
 			check(1) // certificate/key update is incomplete
 			integrationTLSWrite(t, cfg.TLSKeyFile, second.keyPEM)
+			// Observe the new cached certificate before any callback/handshake:
+			// publication must be driven by filesystem events, not new traffic.
+			integrationTLSAwaitSerial(t, reloader, 2)
 			check(2)
+			processed = reloader.processed.Load()
 			integrationTLSWrite(t, cfg.TLSCertFile, []byte("incomplete PEM"))
+			integrationTLSAwaitProcessed(t, reloader, processed)
 			check(2)
+			processed = reloader.processed.Load()
 			integrationTLSWrite(t, cfg.TLSCertFile, expired.certPEM)
 			integrationTLSWrite(t, cfg.TLSKeyFile, expired.keyPEM)
+			integrationTLSAwaitProcessed(t, reloader, processed)
 			check(2)
 			integrationTLSWrite(t, cfg.TLSCertFile, third.certPEM)
 			integrationTLSWrite(t, cfg.TLSKeyFile, third.keyPEM)
+			integrationTLSAwaitSerial(t, reloader, 3)
 			check(3)
 			if mtls {
 				// A certificate signed by the trusted CA but intended only for

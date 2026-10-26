@@ -133,6 +133,9 @@ type Config struct {
 	TLSConfig    *tls.Config
 	AccessLogger *log.Logger
 	ErrorLogger  *log.Logger
+
+	// TLSCertificateWatcher must be closed when the servers stop.
+	TLSCertificateWatcher io.Closer `yaml:"-"`
 }
 
 type YamlConfig struct {

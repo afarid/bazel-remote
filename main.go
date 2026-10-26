@@ -70,6 +70,13 @@ func run(ctx *cli.Context) error {
 		_ = cli.ShowAppHelp(ctx)
 		return cli.Exit(err.Error(), 1)
 	}
+	if c.TLSCertificateWatcher != nil {
+		defer func() {
+			if err := c.TLSCertificateWatcher.Close(); err != nil {
+				log.Printf("Error stopping TLS certificate watcher: %v", err)
+			}
+		}()
+	}
 
 	if ctx.NArg() > 0 {
 		_, _ = fmt.Fprintf(ctx.App.Writer,

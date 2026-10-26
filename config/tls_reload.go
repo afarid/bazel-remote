@@ -5,49 +5,66 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // tlsCertificateReloader is shared by the HTTP and gRPC TLS configs (including
 // their clones). Only fully validated, immutable certificates are published.
 type tlsCertificateReloader struct {
-	mu                sync.Mutex
 	certFile, keyFile string
-	certificate       *tls.Certificate
+	certificate       atomic.Pointer[tls.Certificate]
 	certHash, keyHash [sha256.Size]byte
 	lastError         string
+	watcher           *fsnotify.Watcher
+	stop, done        chan struct{}
+	closeOnce         sync.Once
+	closeError        error
+	processed         atomic.Uint64 // Completed filesystem-triggered reload attempts.
 }
 
 func newTLSCertificateReloader(certFile, keyFile string) (*tlsCertificateReloader, error) {
-	r := &tlsCertificateReloader{certFile: certFile, keyFile: keyFile}
-	if err := r.reload(); err != nil {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("creating TLS certificate watcher: %w", err)
+	}
+	r := &tlsCertificateReloader{
+		certFile: certFile, keyFile: keyFile, watcher: watcher,
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	// Install directory watches before reading, so changes during initialization
+	// are queued rather than lost between the first read and watcher startup.
+	if err := r.watchDirectories(); err != nil {
+		_ = watcher.Close()
 		return nil, err
 	}
+	if err := r.reload(); err != nil {
+		_ = watcher.Close()
+		return nil, err
+	}
+	go r.watch()
 	return r, nil
 }
 
 func (r *tlsCertificateReloader) getCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if err := r.reload(); err != nil {
-		// Avoid logging the same failure for every incoming connection. Keep
-		// retrying so a repaired pair, or a future-dated cert, can be accepted.
-		if message := err.Error(); message != r.lastError {
-			log.Printf("TLS certificate reload failed; keeping the previous certificate: %s", message)
-			r.lastError = message
-		}
-	} else {
-		r.lastError = ""
-	}
-	return r.certificate, nil
+	// Handshakes never perform filesystem I/O. The background watcher publishes
+	// a validated certificate even when neither listener receives any traffic.
+	return r.certificate.Load(), nil
 }
 
-// reload runs at startup and under mu during handshakes. Reading contents rather
-// than watching file metadata also handles atomic renames and symlink rotations.
+// Close stops the watcher and waits for all reload work to finish. It is safe to
+// call more than once, including concurrently.
+func (r *tlsCertificateReloader) Close() error {
+	r.closeOnce.Do(func() { close(r.stop) })
+	<-r.done
+	return r.closeError
+}
+
+// reload runs at startup, then exclusively in the watch goroutine.
 func (r *tlsCertificateReloader) reload() error {
 	certPEM, err := os.ReadFile(r.certFile)
 	if err != nil {
@@ -58,7 +75,7 @@ func (r *tlsCertificateReloader) reload() error {
 		return fmt.Errorf("error reading TLS key: %w", err)
 	}
 	certHash, keyHash := sha256.Sum256(certPEM), sha256.Sum256(keyPEM)
-	if r.certificate != nil && r.certHash == certHash && r.keyHash == keyHash {
+	if r.certificate.Load() != nil && r.certHash == certHash && r.keyHash == keyHash {
 		return nil
 	}
 
@@ -71,8 +88,8 @@ func (r *tlsCertificateReloader) reload() error {
 	}
 
 	// Commit the pair together. Failed or partial file updates leave all of the
-	// previously accepted state intact and will be retried on the next handshake.
-	r.certificate = &certificate
+	// previously accepted state intact and will be retried after further changes.
+	r.certificate.Store(&certificate)
 	r.certHash, r.keyHash = certHash, keyHash
 	return nil
 }

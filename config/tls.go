@@ -26,15 +26,8 @@ func (c *Config) setTLSConfig() error {
 		return nil
 	}
 
-	reloader, err := newTLSCertificateReloader(c.TLSCertFile, c.TLSKeyFile)
-	if err != nil {
-		return err
-	}
-
 	tlsConfig := &tls.Config{
-		// Leave Certificates empty so even clients without SNI use the callback.
-		GetCertificate: reloader.getCertificate,
-		MinVersion:     minTLSVersion,
+		MinVersion: minTLSVersion,
 	}
 
 	if len(c.TLSCaFile) != 0 {
@@ -57,6 +50,13 @@ func (c *Config) setTLSConfig() error {
 		tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
 	}
 
+	reloader, err := newTLSCertificateReloader(c.TLSCertFile, c.TLSKeyFile)
+	if err != nil {
+		return err
+	}
+	// Leave Certificates empty so even clients without SNI use the callback.
+	tlsConfig.GetCertificate = reloader.getCertificate
+	c.TLSCertificateWatcher = reloader
 	c.TLSConfig = tlsConfig
 	return nil
 }
