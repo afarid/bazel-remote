@@ -22,6 +22,21 @@ func (c *Config) setTLSConfig() error {
 		return errors.New("Unsupported min_tls_version: \"" + c.MinTLSVersion + "\", must be one of 1.0, 1.1, 1.2, 1.3.")
 	}
 
+	if c.TLSCertFile == "" && c.TLSKeyFile == "" && c.TLSCaFile == "" {
+		return nil
+	}
+
+	reloader, err := newTLSCertificateReloader(c.TLSCertFile, c.TLSKeyFile)
+	if err != nil {
+		return err
+	}
+
+	tlsConfig := &tls.Config{
+		// Leave Certificates empty so even clients without SNI use the callback.
+		GetCertificate: reloader.getCertificate,
+		MinVersion:     minTLSVersion,
+	}
+
 	if len(c.TLSCaFile) != 0 {
 		caCertPool := x509.NewCertPool()
 		caCert, err := os.ReadFile(c.TLSCaFile)
@@ -33,47 +48,15 @@ func (c *Config) setTLSConfig() error {
 			return fmt.Errorf("failed to add certificate to cert pool")
 		}
 
-		readCert, err := tls.LoadX509KeyPair(
-			c.TLSCertFile,
-			c.TLSKeyFile,
-		)
-		if err != nil {
-			return fmt.Errorf("error reading certificate/key pair: %w", err)
-		}
-
-		c.TLSConfig = &tls.Config{
-			Certificates: []tls.Certificate{readCert},
-			ClientCAs:    caCertPool,
-
-			// This allows us to handle some requests without a valid client
-			// certificate (like the grpc health check service), but then we
-			// need to explicitly check for verified certs on requests that
-			// we require auth for.
-			// See server.checkGRPCClientCert and httpCache.hasValidClientCert.
-			ClientAuth: tls.VerifyClientCertIfGiven,
-
-			MinVersion: minTLSVersion,
-		}
-
-		return nil
+		tlsConfig.ClientCAs = caCertPool
+		// This allows us to handle some requests without a valid client
+		// certificate (like the grpc health check service), but then we
+		// need to explicitly check for verified certs on requests that
+		// we require auth for.
+		// See server.checkGRPCClientCert and httpCache.hasValidClientCert.
+		tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
 	}
 
-	if len(c.TLSCertFile) != 0 && len(c.TLSKeyFile) != 0 {
-		readCert, err := tls.LoadX509KeyPair(
-			c.TLSCertFile,
-			c.TLSKeyFile,
-		)
-		if err != nil {
-			return fmt.Errorf("error reading certificate/key pair: %w", err)
-		}
-
-		c.TLSConfig = &tls.Config{
-			Certificates: []tls.Certificate{readCert},
-			MinVersion:   minTLSVersion,
-		}
-
-		return nil
-	}
-
+	c.TLSConfig = tlsConfig
 	return nil
 }

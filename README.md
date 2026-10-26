@@ -738,6 +738,28 @@ $ docker run -v /your/path/to/data:/data buchgr/bazel-remote-cache:tmp-arm64 --m
 $ bazel build :bazel-remote
 ```
 
+### TLS certificate rotation
+
+The server automatically reloads `tls_cert_file` and `tls_key_file` on new full
+HTTP and gRPC TLS handshakes when their contents change. No restart or signal
+is required. Established connections and resumed TLS sessions are unaffected.
+File replacement and symlink rotation are supported; update both files together
+where possible to avoid temporarily exposing a mismatched pair.
+
+Before accepting a replacement, bazel-remote checks that the certificate and
+private key match, that every certificate in the supplied chain parses and is
+currently valid, that adjacent certificates have valid issuer signatures, and
+that the supplied chain's constraints permit TLS server authentication.
+Self-signed and private CA certificates are supported; clients remain responsible
+for verifying the server's hostname and trust chain.
+
+Invalid initial certificates prevent startup. If a later update is invalid or
+unreadable, the server logs the error and continues using the last accepted
+certificate, retrying on subsequent TLS handshakes. This fallback does not extend
+the previous certificate's expiration date. Client CA trust (`tls_ca_file`) and
+upstream proxy TLS configuration are loaded at startup and require a restart
+when changed.
+
 ### Authentication
 
 bazel-remote defaults to allow unauthenticated access, but basic `.htpasswd`
